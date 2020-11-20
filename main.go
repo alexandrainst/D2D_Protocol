@@ -704,24 +704,3 @@ func fileExists(filename string) bool {
 	}
 	return !info.IsDir()
 }
-
-/*
-TODO:
-
-	visualize messages
-		recalc from agents/controller
-		reorg from  agents/controller
-		maybe discovery of missing peer?
-
-	test:
-		controller comes back
-		what happens to the drone that takes over the controller role?
-	if agent (with same) comes back before swarm notices it's gone - nothing happens
-	remove and add same agent (after timeout) to check what happens
-	use authentication
-
-
-
-
-
-*/

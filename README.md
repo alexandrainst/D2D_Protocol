@@ -50,6 +50,8 @@ command with a name (similar to -name=agent1) and a number. This will start a nu
 1.	Integrate with hardware and/or SITLs to make it work with e.g. ArduPilot
 2.	Improve on communication - minimize the number of messages sent
 3.	Add device management
+4.	Implement a goal function
+5.	Implement the sending of data to a different endpoint in coherence with "goal"
 
 
 ## Contributing to D2D Protocol
