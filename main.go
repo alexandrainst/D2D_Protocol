@@ -198,18 +198,25 @@ func startStateWork() {
 			msg := <-comm.StateChannel
 
 			state := msg.Content
-			// if agentType == model.ControllerAgent {
-			// 	log.Println(state)
-			// }
 
 			agentId := state.ID
 			agentsMux.Lock()
 			if ah, ok := agents[agentId]; ok {
+
+				if MySelf.UUID == *missionaireId && ah.State.Mission.Geometry != nil {
+					if state.Mission.Geometry == nil {
+						//agent is sending a blank mission, while controller belives that it should have
+						//resending...
+						sendMissionToAgent(ah.Agent, ah.State.Mission)
+					}
+				}
+
 				//agent already known
 				ah.State = state
 				ah.LastSeen = time.Now().Unix()
 
 				agents[agentId] = ah
+
 			}
 			agentsMux.Unlock()
 			//check to see if the agent was believed to be dead
