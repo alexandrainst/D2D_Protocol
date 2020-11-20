@@ -1,4 +1,3 @@
-echo "hej"
 
 echo "number of agents: $2"
 echo "name $1 "

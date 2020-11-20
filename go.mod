@@ -2,9 +2,7 @@ module alexandra.dk/D2D_Agent
 
 go 1.15
 
-replace github.com/alexandrainst/D2D-communication => /Users/skov/Alexandra/Alexandra/D2D/src/comm
 
-replace github.com/alexandrainst/agentlogic => /Users/skov/Alexandra/Alexandra/D2D/src/agentlogic
 
 require (
 	github.com/alexandrainst/D2D-communication v0.9.1
