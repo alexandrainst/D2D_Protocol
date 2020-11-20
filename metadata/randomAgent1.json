@@ -1,0 +1,15 @@
+{
+	"ID": 1,
+	"Nick":"Agent1",
+	"URL": "",
+	"Position": {
+		"X": -990,
+		"Y": -990,
+		"Z": 0
+	},
+	"Key": "CryptoKey",
+	"Battery": 100,
+	"MovementDimensions": 2,
+	"Hardware": ["camera"],
+	"Software": [""]
+}

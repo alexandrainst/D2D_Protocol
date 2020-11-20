@@ -1,0 +1,16 @@
+{
+    "Description":"This is a test mission. Located at Århus Stadion...or DTU. Cant remember. ",
+    "MissionType":"find",
+    "AreaLink":"./metadata/testgeo2.json",
+    "MetaNeeded":{
+        "MovementAxis":2,
+        "SwarmSW":["human detection"],
+        "OnboardHW":["camera"],
+        "DataCollection":"https..."
+    },
+    "Goal":{
+        "Do":"matchImage",
+        "End":"URItoImg"
+    }
+        
+}

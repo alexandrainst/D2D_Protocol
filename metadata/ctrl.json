@@ -1,0 +1,15 @@
+{
+	"ID": 1,
+	"Nick":"-176",
+	"URL": "",
+	"Position": {
+		"X": 176,
+		"Y": 666,
+		"Z": 161
+	},
+	"Key": "Controller",
+	"Battery": 100,
+	"MovementDimensions": 3,
+	"Hardware": ["camera"],
+	"Software": [""]
+}

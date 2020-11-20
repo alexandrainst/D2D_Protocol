@@ -1,0 +1,15 @@
+{
+	"id": 2,
+	"Nick":"Agent2",
+	"url": "",
+	"position": {
+		"X": -10,
+		"Y": -990,
+		"Z": 100
+	},
+	"key": "CryptoKey2",
+	"battery": 90,
+	"movementDimensions": 3,
+	"hardware": ["camera"],
+	"software": ["human detection"]
+}
