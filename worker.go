@@ -34,7 +34,7 @@ var waypointMux = &sync.Mutex{}
 var stateMux = &sync.Mutex{}
 
 //NOTE: some of this work should maybe be removed as it is redundant
-var MySelf *agentlogic.Agent
+var mySelf *agentlogic.Agent
 var myState *agentlogic.State
 
 var height = float64(0)
@@ -42,6 +42,15 @@ var height = float64(0)
 var _isSim bool
 
 func StartAgentWork(isSim *bool) {
+	stateMux.Lock()
+	myState = &agentlogic.State{
+		ID:       mySelf.UUID,
+		Mission:  *new(agentlogic.Mission),
+		Battery:  mySelf.Battery,
+		Position: mySelf.Position,
+	}
+	stateMux.Unlock()
+
 	_isSim = *isSim
 	//waiting for finding a controller before we start
 	if !HasCtrl {
@@ -51,19 +60,11 @@ func StartAgentWork(isSim *bool) {
 		log.Println("Worker: Controller detected")
 		SetController(ctrl)
 	}
-	stateMux.Lock()
-	myState = &agentlogic.State{
-		ID:       MySelf.UUID,
-		Mission:  *new(agentlogic.Mission),
-		Battery:  MySelf.Battery,
-		Position: MySelf.Position,
-	}
-	stateMux.Unlock()
 
 	sendAnnouncement()
 	sendState()
 
-	if MySelf.MovementDimensions > 2 {
+	if mySelf.MovementDimensions > 2 {
 		//if the agent can fly, it is set for specific height.
 		//Not optimal, but usable for PoC
 		height = 50
@@ -176,15 +177,15 @@ func sendAnnouncement() {
 	go func() {
 		for {
 
-			comm.AnnounceSelf(MySelf)
+			comm.AnnounceSelf(mySelf)
 			if *UseViz {
 				go func(agent agentlogic.Agent) {
 					m := comm.DiscoveryMessage{
-						MessageMeta: comm.MessageMeta{MsgType: comm.DiscoveryMessageType, SenderId: MySelf.UUID, SenderType: agentType},
+						MessageMeta: comm.MessageMeta{MsgType: comm.DiscoveryMessageType, SenderId: mySelf.UUID, SenderType: agentType},
 						Content:     agent,
 					}
 					comm.ChannelVisualization <- &m
-				}(*MySelf)
+				}(*mySelf)
 
 			}
 			time.Sleep(2 * time.Second)
@@ -201,13 +202,15 @@ func PrepareForMission(state *agentlogic.State) {
 	waypointMux.Unlock()
 	stateMux.Lock()
 	if state.Mission.Geometry == nil {
-		log.Println(MySelf.UUID + ": No mission assigned")
+		log.Println(mySelf.UUID + ": No mission assigned")
 		stateMux.Unlock()
 		return
 	} else {
 		//log.Println(MySelf.UUID + ": New mission received")
 	}
-	agentPath, err := state.Mission.GeneratePath(*MySelf, 25)
+	ah := agentlogic.AgentHolder{Agent: *mySelf, State: *state}
+	//agentPath, err := state.Mission.GeneratePath(*MySelf, 25)
+	agentPath, err := state.Mission.GeneratePath(ah, 25)
 	if err != nil {
 		log.Println("Mission generation err:")
 		log.Println(err)
@@ -254,7 +257,7 @@ func sendState() {
 			if *UseViz {
 				go func(state agentlogic.State) {
 					m := comm.StateMessage{
-						MessageMeta: comm.MessageMeta{MsgType: comm.StateMessageType, SenderId: MySelf.UUID, SenderType: agentType},
+						MessageMeta: comm.MessageMeta{MsgType: comm.StateMessageType, SenderId: mySelf.UUID, SenderType: agentType},
 						Content:     state,
 					}
 
