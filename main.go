@@ -11,7 +11,9 @@ import (
 	"sync"
 	"time"
 
+	"alexandra.dk/D2D_Agent/goal"
 	"alexandra.dk/D2D_Agent/model"
+	"alexandra.dk/D2D_Agent/workers"
 	comm "github.com/alexandrainst/D2D-communication"
 	"github.com/alexandrainst/agentlogic"
 	"github.com/jinzhu/copier"
@@ -24,8 +26,6 @@ var agents = make(map[string]agentlogic.AgentHolder)
 var lostAgents = make(map[string][]string)
 var agentsRecalculator = make(map[string]string)
 
-var agentType agentlogic.AgentType
-
 var agentsMux = &sync.Mutex{}
 var reorgMux = &sync.Mutex{}
 var recalcMux = &sync.Mutex{}
@@ -34,13 +34,11 @@ var missionaireId *string
 
 const zoomLevel = 25
 
-//dummy
 const discoveryPath = "D2D_Discovery"
 const statePath = "D2D_State"
 const reorganizationPath = "D2D_Reorganization"
 const recalculationPath = "D2D_Recalculation"
 
-const deltaForStateSend = 750               //mili secs
 const timeForReorganizationWarning = 1      //secs
 const timeForReorganizationWork = 2         //secs
 const timeBetweenReorganisationCheck = 2000 //mili secs
@@ -63,32 +61,32 @@ func main() {
 		log.Println("This agent is started in REAL mode")
 	}
 
-	mySelf = initAgent(isCtrl, isSim, isRand, name)
+	workers.MySelf = initAgent(isCtrl, isSim, isRand, name)
 
 	if *logToFile {
-		setupLogToFile(mySelf.UUID)
+		setupLogToFile(workers.MySelf.UUID)
 	}
 
-	log.Printf("Who Am I?\n %#v", mySelf)
+	log.Printf("Who Am I?\n %#v", workers.MySelf)
 	//log.Printf("%#v", MySelf)
 
 	startDiscoveryWork()
-	StartAgentWork(isSim)
+	workers.StartAgentWork(isSim, isViz)
 	if *isCtrl {
-		myState.Mission = *SwarmMission
+		workers.MyState.Mission = *workers.SwarmMission
 	}
 
 	//add myself to agents map if not a controller
-	if agentType != agentlogic.ControllerAgent {
+	if workers.AgentType != agentlogic.ControllerAgent {
 		ah := &agentlogic.AgentHolder{
-			Agent:     *mySelf,
-			State:     *myState,
+			Agent:     *workers.MySelf,
+			State:     *workers.MyState,
 			LastSeen:  time.Now().Unix(),
-			AgentType: agentType,
+			AgentType: workers.AgentType,
 		}
 		agentsMux.Lock()
 
-		agents[mySelf.UUID] = *ah
+		agents[workers.MySelf.UUID] = *ah
 
 		agentsMux.Unlock()
 	}
@@ -96,6 +94,7 @@ func main() {
 	startStateWork()
 	startReorganization()
 	startMissionWork()
+	startGoalWork()
 
 	select {}
 }
@@ -105,21 +104,21 @@ func initAgent(isCtrl *bool, isSim *bool, isRand *bool, name *string) *agentlogi
 	agent := model.GetMetadataForAgent(isSim, isCtrl, *isRand, name)
 
 	if *isCtrl == true {
-		agentType = agentlogic.ControllerAgent
+		workers.AgentType = agentlogic.ControllerAgent
 		log.Println("This agent is started as a controller")
 		missionaireId = &agent.UUID
-		SetController(&agent)
-		SwarmMission = model.GetMission()
-		SwarmMission.SwarmGeometry = SwarmMission.Geometry
-		log.Printf("bounds: %v", SwarmMission.Geometry.Bound())
+		workers.SetController(&agent)
+		workers.SwarmMission = model.GetMission()
+		workers.SwarmMission.SwarmGeometry = workers.SwarmMission.Geometry
+		log.Printf("bounds: %v", workers.SwarmMission.Geometry.Bound())
 	} else {
 		log.Println("This agent is started as a context unit")
-		agentType = agentlogic.ContextAgent
+		workers.AgentType = agentlogic.ContextAgent
 		log.Printf(agent.Nick+" is starting at position: %v \n", agent.Position)
 	}
 
-	log.Println("Init communication with agentType: ", agentType)
-	comm.InitD2DCommuncation(agentType)
+	log.Println("Init communication with agentType: ", workers.AgentType)
+	comm.InitD2DCommuncation(workers.AgentType)
 
 	log.Println("Start registration on path: " + discoveryPath)
 	//comm.InitRegistration(discoveryPath)
@@ -128,9 +127,11 @@ func initAgent(isCtrl *bool, isSim *bool, isRand *bool, name *string) *agentlogi
 	// log.Println("Start state on path: " + statePath)
 	comm.InitCommunicationType(statePath, comm.StateMessageType)
 
+	comm.InitCommunicationType(workers.GoalPath, comm.GoalMessageType)
+
 	if *UseViz {
 		log.Println("This agent sends visualization data")
-		comm.InitVisualizationMessages(false)
+		comm.InitVisualizationMessages(true)
 	}
 	//agent.UUID = comm.SelfId.Pretty()
 	agent.UUID = agent.Nick
@@ -155,31 +156,31 @@ func startDiscoveryWork() {
 
 				if msg.MessageMeta.SenderType == agentlogic.ControllerAgent {
 
-					if agentType == agentlogic.ContextAgent && !HasCtrl {
+					if workers.AgentType == agentlogic.ContextAgent && !workers.HasCtrl {
 						//TODO: check that this is a controller, we trust
 						log.Println("Found a controller - handing over mission privileges")
-						ControllerDiscoveryChannel <- &msg.Content
-						go comm.InitCommunicationType(mySelf.UUID, comm.MissionMessageType)
+						workers.ControllerDiscoveryChannel <- &msg.Content
+						go comm.InitCommunicationType(workers.MySelf.UUID, comm.MissionMessageType)
 						missionaireId = &msg.Content.UUID
 						if *UseViz {
 							go func(agent agentlogic.Agent) {
 								log.Println("ctrl id: " + agent.UUID)
 								m := comm.DiscoveryMessage{
-									MessageMeta: comm.MessageMeta{MsgType: comm.DiscoveryMessageType, SenderId: mySelf.UUID, SenderType: agentType},
+									MessageMeta: comm.MessageMeta{MsgType: comm.DiscoveryMessageType, SenderId: workers.MySelf.UUID, SenderType: workers.AgentType},
 									Content:     agent,
 								}
 								comm.ChannelVisualization <- &m
 							}(msg.Content)
 
 						}
-					} else if agentType == agentlogic.ControllerAgent {
+					} else if workers.AgentType == agentlogic.ControllerAgent {
 						log.Println("Weird, another controller in swarm...we should panic!")
 						log.Println(msg)
 					}
 
 				}
 
-				log.Printf(mySelf.UUID+": Found a buddy with nick: %s - adding to list \n", msg.Content.Nick)
+				log.Printf(workers.MySelf.UUID+": Found a buddy with nick: %s - adding to list \n", msg.Content.Nick)
 
 				ah := &agentlogic.AgentHolder{
 					Agent:     msg.Content,
@@ -194,7 +195,7 @@ func startDiscoveryWork() {
 
 				//setup mission channel to agent
 
-				if missionaireId != nil && *missionaireId == mySelf.UUID {
+				if missionaireId != nil && *missionaireId == workers.MySelf.UUID {
 					//this is incredible slow and is called everytime a new peer is discovered
 					//TODO: look into a faster approach
 					sendMissions(agents)
@@ -218,7 +219,7 @@ func startStateWork() {
 			agentsMux.Lock()
 			if ah, ok := agents[agentId]; ok {
 
-				if mySelf.UUID == *missionaireId && ah.State.Mission.Geometry != nil {
+				if workers.MySelf.UUID == *missionaireId && ah.State.Mission.Geometry != nil {
 					if state.Mission.Geometry == nil {
 						//agent is sending a blank mission, while controller belives that it should have
 						//resending...
@@ -262,10 +263,10 @@ func startReorganization() {
 			// 	log.Println(MySelf.UUID + " is here")
 			// }
 			//if agentType == agentlogic.ControllerAgent {
-			if *missionaireId == mySelf.UUID {
+			if *missionaireId == workers.MySelf.UUID {
 				//tmp := int64(time.Nanosecond) * time.Now().UnixNano() / int64(time.Millisecond)
 				//log.Printf("reorg time: %d\n", tmp-now)
-				log.Printf(mySelf.UUID+": Members of swarm: %d \n", len(agents))
+				log.Printf(workers.MySelf.UUID+": Members of swarm: %d \n", len(agents))
 				// if len(agents) < 10 {
 				// 	log.Println("known Ids")
 				// 	for id, _ := range agents {
@@ -276,7 +277,7 @@ func startReorganization() {
 			}
 
 			for id, ah := range agents {
-				if id == mySelf.UUID {
+				if id == workers.MySelf.UUID {
 					//log.Println("no need to check self")
 					//no need to check if messages has come in from self
 					continue
@@ -284,14 +285,14 @@ func startReorganization() {
 				//log.Printf("ls: %v regor: %v combined: %v < now %v \n", ah.LastSeen, timeForReorganizationWarning, (ah.LastSeen + (timeForReorganizationWarning)), time.Now().Unix())
 				if ah.LastSeen+(timeForReorganizationWarning) < time.Now().Unix() {
 					if ah.LastSeen+(timeForReorganizationWork) < time.Now().Unix() {
-						log.Printf(mySelf.UUID+": has not seen agent with nick: %s for >%d seconds. Commencing reorganization \n", ah.Agent.Nick, timeForReorganizationWork)
+						log.Printf(workers.MySelf.UUID+": has not seen agent with nick: %s for >%d seconds. Commencing reorganization \n", ah.Agent.Nick, timeForReorganizationWork)
 						//close the connection for sending mission if controller
-						if agentType == agentlogic.ControllerAgent {
+						if workers.AgentType == agentlogic.ControllerAgent {
 							go comm.ClosePath(ah.Agent, comm.MissionMessageType)
 						}
 						delete(agents, id)
 						reorgMux.Lock()
-						lostAgents[id] = append(lostAgents[id], mySelf.UUID)
+						lostAgents[id] = append(lostAgents[id], workers.MySelf.UUID)
 						reorgMux.Unlock()
 						//get ids of all living agents
 						//has to be here because of deadlock otherwise
@@ -300,16 +301,16 @@ func startReorganization() {
 							livingIds = append(livingIds, k)
 						}
 						lostAgentsChanged <- livingIds
-						if ah.AgentType == agentlogic.ControllerAgent && GetController() != nil && ah.Agent.UUID == GetController().UUID {
-							RemoveController()
+						if ah.AgentType == agentlogic.ControllerAgent && workers.GetController() != nil && ah.Agent.UUID == workers.GetController().UUID {
+							workers.RemoveController()
 						}
 
-						go comm.SendReorganization(ah.Agent, mySelf.UUID)
+						go comm.SendReorganization(ah.Agent, workers.MySelf.UUID)
 
 						if *UseViz {
 							go func(agent agentlogic.Agent) {
 								m := comm.DiscoveryMessage{
-									MessageMeta: comm.MessageMeta{MsgType: comm.ReorganizationMessageType, SenderId: mySelf.UUID, SenderType: agentType},
+									MessageMeta: comm.MessageMeta{MsgType: comm.ReorganizationMessageType, SenderId: workers.MySelf.UUID, SenderType: workers.AgentType},
 									Content:     agent,
 								}
 								comm.ChannelVisualization <- &m
@@ -334,9 +335,9 @@ func startReorganization() {
 			msg := <-comm.ReorganizationChannel
 
 			agentId := msg.Content.UUID
-			log.Println(mySelf.UUID + ": " + msg.MessageMeta.SenderId + ": somebody lost their way " + agentId + " !!")
-			if agentId == mySelf.UUID {
-				log.Println(mySelf.UUID + ": somebody else thinks that I'm gone. Stop The Count!")
+			log.Println(workers.MySelf.UUID + ": " + msg.MessageMeta.SenderId + ": somebody lost their way " + agentId + " !!")
+			if agentId == workers.MySelf.UUID {
+				log.Println(workers.MySelf.UUID + ": somebody else thinks that I'm gone. Stop The Count!")
 				continue
 			}
 
@@ -422,7 +423,7 @@ func startReorganization() {
 						recalcMux.Lock()
 						delete(agentsRecalculator, id)
 						recalcMux.Unlock()
-						log.Println(mySelf.UUID + ": " + id + " was in a recalculation process. It is removed from that.")
+						log.Println(workers.MySelf.UUID + ": " + id + " was in a recalculation process. It is removed from that.")
 					}
 
 					//log.Printf("Agent with id %v will handle calculations for new missions \n", recalculatorId)
@@ -438,21 +439,21 @@ func startReorganization() {
 
 				*missionaireId = recalculatorId
 				var recalcAgent agentlogic.Agent
-				if *missionaireId == mySelf.UUID {
-					recalcAgent = *mySelf
-				} else if HasCtrl && recalculatorId == GetController().UUID {
-					recalcAgent = *GetController()
+				if *missionaireId == workers.MySelf.UUID {
+					recalcAgent = *workers.MySelf
+				} else if workers.HasCtrl && recalculatorId == workers.GetController().UUID {
+					recalcAgent = *workers.GetController()
 				} else {
 					recalcAgent = agents[recalculatorId].Agent
 				}
-				agentsRecalculator[mySelf.UUID] = recalcAgent.UUID
+				agentsRecalculator[workers.MySelf.UUID] = recalcAgent.UUID
 				if len(agents) > 1 {
 
-					comm.SendRecalculation(recalcAgent, mySelf.UUID)
+					comm.SendRecalculation(recalcAgent, workers.MySelf.UUID)
 				} else {
 					//only my self left
 					m := comm.DiscoveryMessage{
-						MessageMeta: comm.MessageMeta{MsgType: comm.RecalculatorMessageType, SenderId: mySelf.UUID, SenderType: agentType},
+						MessageMeta: comm.MessageMeta{MsgType: comm.RecalculatorMessageType, SenderId: workers.MySelf.UUID, SenderType: workers.AgentType},
 						Content:     recalcAgent,
 					}
 					comm.RecalculationChannel <- &m
@@ -461,7 +462,7 @@ func startReorganization() {
 				if *UseViz {
 					go func(agent agentlogic.Agent) {
 						m := comm.DiscoveryMessage{
-							MessageMeta: comm.MessageMeta{MsgType: comm.RecalculatorMessageType, SenderId: mySelf.UUID, SenderType: agentType},
+							MessageMeta: comm.MessageMeta{MsgType: comm.RecalculatorMessageType, SenderId: workers.MySelf.UUID, SenderType: workers.AgentType},
 							Content:     agent,
 						}
 						comm.ChannelVisualization <- &m
@@ -504,18 +505,18 @@ func startReorganization() {
 						recalcAgent := agents[recalculatorId]
 						agentsMux.Unlock()
 						log.Println("sending recalc: " + recalcAgent.Agent.UUID)
-						comm.SendRecalculation(recalcAgent.Agent, mySelf.UUID)
+						comm.SendRecalculation(recalcAgent.Agent, workers.MySelf.UUID)
 						swarmAgrees = false
 						break
 					}
 				}
 				if swarmAgrees {
 					//peers are in agreement
-					log.Println(mySelf.UUID + ": Peers agree on who is responsible for mission planning: " + *missionaireId)
+					log.Println(workers.MySelf.UUID + ": Peers agree on who is responsible for mission planning: " + *missionaireId)
 					//clear the list as they agree
 					agentsRecalculator = make(map[string]string)
 				}
-				if *missionaireId == mySelf.UUID {
+				if *missionaireId == workers.MySelf.UUID {
 					log.Println("whoaaa...I'm the new mission calculator. Better go to work")
 					sendMissions(agents)
 
@@ -554,31 +555,49 @@ func startMissionWork() {
 				continue
 			}
 			///update swarmMission is case changes has happened
-			SwarmMission = new(agentlogic.Mission)
-			SwarmMission.Description = msg.Content.Description
-			SwarmMission.MetaNeeded = msg.Content.MetaNeeded
-			SwarmMission.Goal = msg.Content.Goal
-			SwarmMission.Geometry = msg.Content.SwarmGeometry
-			stateMux.Lock()
-			myState.Mission = msg.Content
+			workers.SwarmMission = new(agentlogic.Mission)
+			workers.SwarmMission.Description = msg.Content.Description
+			workers.SwarmMission.MetaNeeded = msg.Content.MetaNeeded
+			workers.SwarmMission.Goal = msg.Content.Goal
+			workers.SwarmMission.Geometry = msg.Content.SwarmGeometry
+			workers.StateMux.Lock()
+			workers.MyState.Mission = msg.Content
 			//we don't need it anymore
-			myState.Mission.SwarmGeometry = nil
-			stateMux.Unlock()
+			workers.MyState.Mission.SwarmGeometry = nil
+			workers.StateMux.Unlock()
 			//log.Println("My mission has been updated")
-			PrepareForMission(myState)
+			workers.PrepareForMission(workers.MyState)
+		}
+	}()
+}
+
+func startGoalWork() {
+	log.Println("Waiting for goal")
+	go func() {
+		for {
+			msg := <-comm.GoalChannel
+			senderId := msg.MessageMeta.SenderId
+			if _, ok := agents[senderId]; !ok {
+				log.Println("Goal message received from unknown agent(" + senderId + "). It's being ignored!")
+				continue
+			}
+			log.Println("Goal message received from: " + senderId + "!")
+			//TODO: compare the recived goal to own goal, to make sure that it fits
+
+			goal.EvaluteEndstate(msg.Content, msg.Position)
 		}
 	}()
 }
 
 func recalculateMission(agents map[string]agentlogic.AgentHolder) map[string]agentlogic.AgentHolder {
 	//TODO: Handle if ctrl disappears and context agent takes over - right now, a context will not be part of the new swarm mission
-	if SwarmMission == nil {
+	if workers.SwarmMission == nil {
 		log.Println("Not able to calculate missions, as swarm mission is nil!!")
 		return nil
 	}
 	agentsMux.Lock()
 
-	missions, err := agentlogic.ReplanMission(*SwarmMission, agents, zoomLevel)
+	missions, err := agentlogic.ReplanMission(*workers.SwarmMission, agents, zoomLevel)
 
 	agentsMux.Unlock()
 	if err != nil {
@@ -589,8 +608,8 @@ func recalculateMission(agents map[string]agentlogic.AgentHolder) map[string]age
 	agentsMux.Lock()
 	for id, ah := range agents {
 		agentMission := missions[id]
-		agentMission.SwarmGeometry = SwarmMission.Geometry
-		agentMission.Description = agentMission.Description + " Sent from " + mySelf.Nick
+		agentMission.SwarmGeometry = workers.SwarmMission.Geometry
+		agentMission.Description = agentMission.Description + " Sent from " + workers.MySelf.Nick
 		ah.State.Mission = agentMission
 		agents[id] = ah
 	}
@@ -602,7 +621,7 @@ func recalculateMission(agents map[string]agentlogic.AgentHolder) map[string]age
 func sendMissions(agents map[string]agentlogic.AgentHolder) {
 	log.Println("Starting sending new missions")
 
-	if agentType == agentlogic.ControllerAgent && len(agents) == 0 {
+	if workers.AgentType == agentlogic.ControllerAgent && len(agents) == 0 {
 		log.Println("No agents to send mission to! I'm all alone")
 		return
 	}
@@ -620,7 +639,7 @@ func sendMissions(agents map[string]agentlogic.AgentHolder) {
 		copier.Copy(&tah, ah)
 
 		tmpAgents[id] = tah
-		if id != mySelf.UUID {
+		if id != workers.MySelf.UUID {
 			comm.InitCommunicationType(id, comm.MissionMessageType)
 		}
 	}
@@ -643,7 +662,7 @@ func broadcastMission(tmpAgents map[string]agentlogic.AgentHolder) {
 		sendMissionToAgent(ah.Agent, ah.State.Mission)
 	}
 	agentsMux.Unlock()
-	log.Printf(mySelf.UUID+": Sent mision to %v \n", tmpIds)
+	log.Printf(workers.MySelf.UUID+": Sent mision to %v \n", tmpIds)
 
 }
 
@@ -651,17 +670,17 @@ func sendMissionToAgent(agent agentlogic.Agent, mission agentlogic.Mission) {
 
 	//var channelPath string
 	channelPath := *missionaireId
-	if *missionaireId == mySelf.UUID {
+	if *missionaireId == workers.MySelf.UUID {
 		channelPath = agent.UUID
 	}
 	//log.Println("Sending mission to " + channelPath)
 
-	go comm.SendMission(mySelf.UUID, &mission, channelPath)
+	go comm.SendMission(workers.MySelf.UUID, &mission, channelPath)
 
 	if *UseViz {
 		go func(vizMission agentlogic.Mission) {
 			m := comm.MissionMessage{
-				MessageMeta: comm.MessageMeta{MsgType: comm.MissionMessageType, SenderId: agent.UUID, SenderType: agentType},
+				MessageMeta: comm.MessageMeta{MsgType: comm.MissionMessageType, SenderId: agent.UUID, SenderType: workers.AgentType},
 				Content:     vizMission,
 			}
 			comm.ChannelVisualization <- &m
@@ -671,13 +690,13 @@ func sendMissionToAgent(agent agentlogic.Agent, mission agentlogic.Mission) {
 
 //atm we just choose the agent in the swarm with lowest id - it's trivial, i know
 func findRecalculator(agents map[string]agentlogic.AgentHolder) string {
-	if HasCtrl {
+	if workers.HasCtrl {
 		log.Println("Controller still in swarm - no need to change who handles missions")
-		return GetController().UUID
+		return workers.GetController().UUID
 	}
 	if len(agents) == 0 {
 		//only one left
-		return mySelf.UUID
+		return workers.MySelf.UUID
 	}
 
 	//agentsMux.Lock()

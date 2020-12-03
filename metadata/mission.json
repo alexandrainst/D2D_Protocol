@@ -10,7 +10,8 @@
     },
     "Goal":{
         "Do":"matchImage",
-        "End":"URItoImg"
+        "End":"http://localhost:8888/upload",
+        "Endgame":"Gather"
     }
         
 }

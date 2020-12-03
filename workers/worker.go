@@ -1,4 +1,4 @@
-package main
+package workers
 
 import (
 	"fmt"
@@ -14,9 +14,11 @@ import (
 	"github.com/alexandrainst/agentlogic"
 )
 
+var AgentType agentlogic.AgentType
+
 var controller *agentlogic.Agent
 
-//var lastSeen time.Time
+const GoalPath = "D2D_Goal"
 
 var HasCtrl = false
 
@@ -31,27 +33,32 @@ var ControllerDiscoveryChannel = make(chan *agentlogic.Agent, buffersize)
 var MissionUpdateChannel = make(chan orb.LineString, buffersize)
 
 var waypointMux = &sync.Mutex{}
-var stateMux = &sync.Mutex{}
+var StateMux = &sync.Mutex{}
 
 //NOTE: some of this work should maybe be removed as it is redundant
-var mySelf *agentlogic.Agent
-var myState *agentlogic.State
+var MySelf *agentlogic.Agent
+var MyState *agentlogic.State
 
-var height = float64(0)
+const deltaForStateSend = 750 //mili secs
 
 var _isSim bool
+var _useViz bool
 
-func StartAgentWork(isSim *bool) {
-	stateMux.Lock()
-	myState = &agentlogic.State{
-		ID:       mySelf.UUID,
+//dummy
+var height = float64(0)
+
+func StartAgentWork(isSim *bool, useViz *bool) {
+	StateMux.Lock()
+	MyState = &agentlogic.State{
+		ID:       MySelf.UUID,
 		Mission:  *new(agentlogic.Mission),
-		Battery:  mySelf.Battery,
-		Position: mySelf.Position,
+		Battery:  MySelf.Battery,
+		Position: MySelf.Position,
 	}
-	stateMux.Unlock()
+	StateMux.Unlock()
 
 	_isSim = *isSim
+	_useViz = *useViz
 	//waiting for finding a controller before we start
 	if !HasCtrl {
 		//agent will not join the swarm unless is has a controller to begin with
@@ -64,7 +71,7 @@ func StartAgentWork(isSim *bool) {
 	sendAnnouncement()
 	sendState()
 
-	if mySelf.MovementDimensions > 2 {
+	if MySelf.MovementDimensions > 2 {
 		//if the agent can fly, it is set for specific height.
 		//Not optimal, but usable for PoC
 		height = 50
@@ -80,7 +87,7 @@ func StartAgentWork(isSim *bool) {
 		}
 	}()
 
-	if agentType == agentlogic.ContextAgent {
+	if AgentType == agentlogic.ContextAgent {
 		go func() {
 
 			log.Println("Waiting for mission")
@@ -88,6 +95,7 @@ func StartAgentWork(isSim *bool) {
 				workAsSim()
 			} else {
 				//do another thing
+				workAsPhysical()
 			}
 
 		}()
@@ -95,97 +103,19 @@ func StartAgentWork(isSim *bool) {
 
 }
 
-func workAsSim() {
-	log.Println("Starting to work as sim")
-	//the length of step an agent can move in a sim
-	var deltaMovement = float64(0.000005)
-	//var wayPoints = *line
-	waypoints := <-MissionUpdateChannel
-	log.Println("Mission received")
-	log.Printf("number of waypoints: %d", len(waypoints))
-
-	for {
-
-		waypointMux.Lock()
-		if !missionRunning {
-			waypointMux.Unlock()
-			time.Sleep(750 * time.Millisecond)
-			continue
-			//could probably be done more effectively
-		}
-
-		//wayPoints = *line
-
-		waypointMux.Unlock()
-		stateMux.Lock()
-		select {
-		case waypoints = <-MissionUpdateChannel:
-			log.Printf("new number of waypoints: %d", len(waypoints))
-			//log.Printf(MySelf.UUID+": New mission received with no of waypoints: %d \n", len(waypoints))
-		default:
-			//log.Println("nothing new")
-		}
-
-		currentIndex := myState.MissionIndex
-		stateMux.Unlock()
-		var nextIndex = 0
-		if currentIndex < len(waypoints)-1 {
-			nextIndex = currentIndex + 1
-		}
-
-		tmpWp := waypoints[nextIndex]
-		nextWp := agentlogic.Vector{X: tmpWp.X(), Y: tmpWp.Y(), Z: height}
-		stateMux.Lock()
-		direction := nextWp.Sub(myState.Position)
-		stateMux.Unlock()
-
-		//log.Println(direction.Length())
-		//log.Printf("dirLen: %f, deltaMov: %f \n currentPos: %v nextWP: %v", direction.Length(), deltaMovement, myState.Position, nextWp)
-		if direction.Length() < deltaMovement {
-			//log.Println("Getting next WP")
-			if nextIndex == 0 {
-				//log.Println("at starting point. Waiting two seconds to start mission")
-				time.Sleep(2 * time.Second)
-				//log.Println("STARTING MISSION")
-				//log.Println(nextWp)
-			} else {
-				//log.Printf(MySelf.UUID+": at wp %d, moving to next: %v \n", nextIndex, nextWp)
-			}
-			//if we are within one step of our goal, we mark it as completed
-			stateMux.Lock()
-			myState.MissionIndex = nextIndex
-			stateMux.Unlock()
-			//and move on to next wp
-			continue
-		}
-
-		//log.Println(myState.Position)
-		//now we normalize
-		normalizedDirection := direction.Normalize()
-		//next we scale by delta
-		newPos := normalizedDirection.MultiplyByScalar(deltaMovement)
-		stateMux.Lock()
-		myState.Position = myState.Position.Add(newPos)
-		stateMux.Unlock()
-
-		time.Sleep(250 * time.Millisecond)
-
-	}
-}
-
 func sendAnnouncement() {
 	go func() {
 		for {
 
-			comm.AnnounceSelf(mySelf)
-			if *UseViz {
+			comm.AnnounceSelf(MySelf)
+			if _useViz {
 				go func(agent agentlogic.Agent) {
 					m := comm.DiscoveryMessage{
-						MessageMeta: comm.MessageMeta{MsgType: comm.DiscoveryMessageType, SenderId: mySelf.UUID, SenderType: agentType},
+						MessageMeta: comm.MessageMeta{MsgType: comm.DiscoveryMessageType, SenderId: MySelf.UUID, SenderType: AgentType},
 						Content:     agent,
 					}
 					comm.ChannelVisualization <- &m
-				}(*mySelf)
+				}(*MySelf)
 
 			}
 			time.Sleep(2 * time.Second)
@@ -200,33 +130,44 @@ func PrepareForMission(state *agentlogic.State) {
 	waypointMux.Lock()
 	missionRunning = false
 	waypointMux.Unlock()
-	stateMux.Lock()
+	StateMux.Lock()
 	if state.Mission.Geometry == nil {
-		log.Println(mySelf.UUID + ": No mission assigned")
-		stateMux.Unlock()
+		log.Println(MySelf.UUID + ": No mission assigned")
+		StateMux.Unlock()
 		return
 	} else {
 		//log.Println(MySelf.UUID + ": New mission received")
 	}
-	ah := agentlogic.AgentHolder{Agent: *mySelf, State: *state}
+	ah := agentlogic.AgentHolder{Agent: *MySelf, State: *state}
 	//agentPath, err := state.Mission.GeneratePath(*MySelf, 25)
-	agentPath, err := state.Mission.GeneratePath(ah, 25)
-	if err != nil {
-		log.Println("Mission generation err:")
-		log.Println(err)
+	//check if only a point - if so, it's a goal
+	agentPath := state.Mission.Geometry
+	_, ok := state.Mission.Geometry.(orb.Polygon)
+	if ok == true {
+
+		var err error
+		agentPath, err = state.Mission.GeneratePath(ah, 25)
+		if err != nil {
+			log.Println("Mission generation err:")
+			log.Println(err)
+		}
+		if _isSim {
+			//set the starting point as the first WP
+			tmpWp := agentPath.(orb.MultiLineString)[0][0] //[0]
+			MyState.Position = agentlogic.Vector{X: tmpWp.X(), Y: tmpWp.Y(), Z: height}
+			//log.Printf("setting startPoint %v, next wp: %v \n", myState.Position, agentPath.(orb.MultiLineString)[0][1])
+		}
 	}
+
 	//write to file
 	//writeMissionToFile(*MySelf, state.Mission, agentPath)
 	//end write
-	if _isSim {
-		//set the starting point as the first WP
-		tmpWp := agentPath.(orb.MultiLineString)[0][0] //[0]
-		myState.Position = agentlogic.Vector{X: tmpWp.X(), Y: tmpWp.Y(), Z: height}
-		//log.Printf("setting startPoint %v, next wp: %v \n", myState.Position, agentPath.(orb.MultiLineString)[0][1])
-	}
+
 	//log.Printf("len agentPath: %d", len(agentPath.(orb.MultiLineString)[0]))
 	state.Mission.Geometry = agentPath
 	state.MissionIndex = 0
+
+	log.Println(MyState.Position)
 
 	select {
 	case MissionUpdateChannel <- state.Mission.Geometry.(orb.MultiLineString)[0]:
@@ -234,7 +175,7 @@ func PrepareForMission(state *agentlogic.State) {
 	default:
 		//log.Println("no mission sent")
 	}
-	stateMux.Unlock()
+	StateMux.Unlock()
 	//log.Println("tween locks")
 	waypointMux.Lock()
 	missionRunning = true
@@ -252,17 +193,17 @@ func sendState() {
 			// 	now = tmp
 			// }
 
-			comm.SendState(myState)
+			comm.SendState(MyState)
 
-			if *UseViz {
+			if _useViz {
 				go func(state agentlogic.State) {
 					m := comm.StateMessage{
-						MessageMeta: comm.MessageMeta{MsgType: comm.StateMessageType, SenderId: mySelf.UUID, SenderType: agentType},
+						MessageMeta: comm.MessageMeta{MsgType: comm.StateMessageType, SenderId: MySelf.UUID, SenderType: AgentType},
 						Content:     state,
 					}
 
 					comm.ChannelVisualization <- &m
-				}(*myState)
+				}(*MyState)
 
 			}
 
